@@ -1,16 +1,27 @@
 from setuptools import setup, find_packages
 import os
 import glob
+from setuptools.command.build_ext import build_ext as _build_ext
+
+# Define BuildExtension as a basic build_ext if torch is not available
+class BuildExtension(_build_ext):
+    def __init__(self, *args, **kwargs):
+        kwargs.pop('no_python_abi_suffix', None)
+        kwargs.pop('use_ninja', None)
+        super().__init__(*args, **kwargs)
 
 def get_ext_modules():
     try:
         import torch
         from torch.utils.cpp_extension import (
-            BuildExtension,
+            BuildExtension as TorchBuildExtension,
             CUDAExtension,
             CUDA_HOME,
             CppExtension,
         )
+        
+        global BuildExtension
+        BuildExtension = TorchBuildExtension  # Override the basic BuildExtension
         
         WITH_CUDA = torch.cuda.is_available() and CUDA_HOME is not None
         WITH_CPU = True
@@ -69,14 +80,14 @@ def get_ext_modules():
 
 class CustomBuildExtension(BuildExtension):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, no_python_abi_suffix=True, use_ninja=False, **kwargs)
+        if 'no_python_abi_suffix' in kwargs:
+            kwargs.pop('no_python_abi_suffix')
+        if 'use_ninja' in kwargs:
+            kwargs.pop('use_ninja')
+        super().__init__(*args, **kwargs)
 
 def get_cmdclass():
-    try:
-        from torch.utils.cpp_extension import BuildExtension
-        return {"build_ext": CustomBuildExtension}
-    except ImportError:
-        return {}
+    return {"build_ext": CustomBuildExtension}
 
 this_directory = os.path.abspath(os.path.dirname(__file__))
 with open(os.path.join(this_directory, "README.md"), encoding="utf-8") as f:
