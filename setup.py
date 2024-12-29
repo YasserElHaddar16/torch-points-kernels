@@ -2,80 +2,81 @@ from setuptools import setup, find_packages
 import os
 import glob
 
-try:
-    import torch
-    from torch.utils.cpp_extension import (
-        BuildExtension,
-        CUDAExtension,
-        CUDA_HOME,
-        CppExtension,
-    )
-except:
-    raise ModuleNotFoundError("Please install pytorch >= 1.1 before proceeding.")
-
-WITH_CUDA = torch.cuda.is_available() and CUDA_HOME is not None
-WITH_CPU = True
-if os.getenv("FORCE_CUDA", "0") == "1":
-    WITH_CUDA = True
-if os.getenv("FORCE_ONLY_CUDA", "0") == "1":
-    WITH_CUDA = True
-    WITH_CPU = False
-if os.getenv("FORCE_ONLY_CPU", "0") == "1":
-    WITH_CUDA = False
-    WITH_CPU = True
-
-
 def get_ext_modules():
-    TORCH_MAJOR = int(torch.__version__.split(".")[0])
-    TORCH_MINOR = int(torch.__version__.split(".")[1])
-    extra_compile_args = {"cxx": ["-O3"]}
-    if (TORCH_MAJOR > 1) or (TORCH_MAJOR == 1 and TORCH_MINOR > 2):
-        extra_compile_args["cxx"] += ["-DVERSION_GE_1_3"]
+    try:
+        import torch
+        from torch.utils.cpp_extension import (
+            BuildExtension,
+            CUDAExtension,
+            CUDA_HOME,
+            CppExtension,
+        )
+        
+        WITH_CUDA = torch.cuda.is_available() and CUDA_HOME is not None
+        WITH_CPU = True
+        if os.getenv("FORCE_CUDA", "0") == "1":
+            WITH_CUDA = True
+        if os.getenv("FORCE_ONLY_CUDA", "0") == "1":
+            WITH_CUDA = True
+            WITH_CPU = False
+        if os.getenv("FORCE_ONLY_CPU", "0") == "1":
+            WITH_CUDA = False
+            WITH_CPU = True
 
-    ext_src_root = "cuda"
-    ext_sources = glob.glob("{}/src/*.cpp".format(ext_src_root)) + glob.glob(
-        "{}/src/*.cu".format(ext_src_root)
-    )
+        TORCH_MAJOR = int(torch.__version__.split(".")[0])
+        TORCH_MINOR = int(torch.__version__.split(".")[1])
+        extra_compile_args = {"cxx": ["-O3"]}
+        if (TORCH_MAJOR > 1) or (TORCH_MAJOR == 1 and TORCH_MINOR > 2):
+            extra_compile_args["cxx"] += ["-DVERSION_GE_1_3"]
 
-    ext_modules = []
-    if WITH_CUDA:
-        nvcc_flags = os.getenv("NVCC_FLAGS", "")
-        nvcc_flags = [] if nvcc_flags == "" else nvcc_flags.split(" ")
-        nvcc_flags += ["-arch=sm_35", "--expt-relaxed-constexpr", "-O2"]
-        extra_compile_args["nvcc"] = nvcc_flags
-
-        ext_modules.append(
-            CUDAExtension(
-                name="torch_points_kernels.points_cuda",
-                sources=ext_sources,
-                include_dirs=["{}/include".format(ext_src_root)],
-                extra_compile_args=extra_compile_args,
-            )
+        ext_src_root = "cuda"
+        ext_sources = glob.glob("{}/src/*.cpp".format(ext_src_root)) + glob.glob(
+            "{}/src/*.cu".format(ext_src_root)
         )
 
-    cpu_ext_src_root = "cpu"
-    cpu_ext_sources = glob.glob("{}/src/*.cpp".format(cpu_ext_src_root))
+        ext_modules = []
+        if WITH_CUDA:
+            nvcc_flags = os.getenv("NVCC_FLAGS", "")
+            nvcc_flags = [] if nvcc_flags == "" else nvcc_flags.split(" ")
+            nvcc_flags += ["-arch=sm_35", "--expt-relaxed-constexpr", "-O2"]
+            extra_compile_args["nvcc"] = nvcc_flags
 
-    if WITH_CPU:
-        ext_modules.append(
-            CppExtension(
-                name="torch_points_kernels.points_cpu",
-                sources=cpu_ext_sources,
-                include_dirs=["{}/include".format(cpu_ext_src_root)],
-                extra_compile_args=extra_compile_args,
+            ext_modules.append(
+                CUDAExtension(
+                    name="torch_points_kernels.points_cuda",
+                    sources=ext_sources,
+                    include_dirs=["{}/include".format(ext_src_root)],
+                    extra_compile_args=extra_compile_args,
+                )
             )
-        )
-    return ext_modules
 
+        cpu_ext_src_root = "cpu"
+        cpu_ext_sources = glob.glob("{}/src/*.cpp".format(cpu_ext_src_root))
+
+        if WITH_CPU:
+            ext_modules.append(
+                CppExtension(
+                    name="torch_points_kernels.points_cpu",
+                    sources=cpu_ext_sources,
+                    include_dirs=["{}/include".format(cpu_ext_src_root)],
+                    extra_compile_args=extra_compile_args,
+                )
+            )
+        return ext_modules
+    except ImportError:
+        # If torch is not available during setup, return empty ext_modules
+        return []
 
 class CustomBuildExtension(BuildExtension):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, no_python_abi_suffix=True, use_ninja=False, **kwargs)
 
-
 def get_cmdclass():
-    return {"build_ext": CustomBuildExtension}
-
+    try:
+        from torch.utils.cpp_extension import BuildExtension
+        return {"build_ext": CustomBuildExtension}
+    except ImportError:
+        return {}
 
 this_directory = os.path.abspath(os.path.dirname(__file__))
 with open(os.path.join(this_directory, "README.md"), encoding="utf-8") as f:
@@ -90,6 +91,7 @@ requirements = [
 
 url = "https://github.com/YasserElHaddar16/torch-points-kernels"
 __version__ = "0.7.1"
+
 setup(
     name="torch-points-kernels",
     version=__version__,
