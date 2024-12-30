@@ -1,124 +1,134 @@
 from setuptools import setup, find_packages
 import os
+import sys
 import glob
-from setuptools.command.build_ext import build_ext as _build_ext
+import torch
+from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension, CUDA_HOME
 
-# Define BuildExtension as a basic build_ext if torch is not available
-class BuildExtension(_build_ext):
-    def __init__(self, *args, **kwargs):
-        kwargs.pop('no_python_abi_suffix', None)
-        kwargs.pop('use_ninja', None)
-        super().__init__(*args, **kwargs)
+# Debug information
+print(f"CUDA_HOME: {CUDA_HOME}")
+print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+print(f"PyTorch version: {torch.__version__}")
+
+WITH_CUDA = torch.cuda.is_available() and CUDA_HOME is not None
+if os.getenv("FORCE_CUDA", "0") == "1":
+    WITH_CUDA = True
+print(f"Building with CUDA: {WITH_CUDA}")
 
 def get_ext_modules():
-    try:
-        import torch
-        from torch.utils.cpp_extension import (
-            BuildExtension as TorchBuildExtension,
-            CUDAExtension,
-            CUDA_HOME,
-            CppExtension,
-        )
+    ext_modules = []
+    
+    # Get absolute paths
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    cpu_include = os.path.join(root_dir, "cpu", "include")
+    cuda_include = os.path.join(root_dir, "cuda", "include")
+    
+    include_dirs = [
+        cpu_include,
+        cuda_include,
+    ]
+
+    # CUDA Extension
+    if WITH_CUDA:
+        print("Preparing CUDA extension...")
         
-        global BuildExtension
-        BuildExtension = TorchBuildExtension  # Override the basic BuildExtension
+        # Define CUDA sources (including metrics files)
+        cuda_sources = [
+            'cuda/src/ball_query.cpp',
+            'cuda/src/ball_query_gpu.cu',
+            'cuda/src/bindings.cpp',
+            'cuda/src/chamfer_dist.cpp',
+            'cuda/src/chamfer_dist_gpu.cu',
+            'cuda/src/cubic_feature_sampling.cpp',
+            'cuda/src/cubic_feature_sampling_gpu.cu',
+            'cuda/src/gridding.cpp',
+            'cuda/src/gridding_gpu.cu',
+            'cuda/src/interpolate.cpp',
+            'cuda/src/interpolate_gpu.cu',
+            'cuda/src/sampling.cpp',
+            'cuda/src/sampling_gpu.cu',
+            'cuda/src/metrics.cpp',
+            'cuda/src/metrics_gpu.cu'
+        ]
         
-        WITH_CUDA = torch.cuda.is_available() and CUDA_HOME is not None
-        WITH_CPU = True
-        if os.getenv("FORCE_CUDA", "0") == "1":
-            WITH_CUDA = True
-        if os.getenv("FORCE_ONLY_CUDA", "0") == "1":
-            WITH_CUDA = True
-            WITH_CPU = False
-        if os.getenv("FORCE_ONLY_CPU", "0") == "1":
-            WITH_CUDA = False
-            WITH_CPU = True
+        # Get absolute paths
+        cuda_sources = [os.path.join(root_dir, src) for src in cuda_sources]
+        
+        # Verify source files exist
+        for src in cuda_sources:
+            if not os.path.exists(src):
+                print(f"Warning: Source file not found: {src}")
 
-        TORCH_MAJOR = int(torch.__version__.split(".")[0])
-        TORCH_MINOR = int(torch.__version__.split(".")[1])
-        extra_compile_args = {"cxx": ["-O3"]}
-        if (TORCH_MAJOR > 1) or (TORCH_MAJOR == 1 and TORCH_MINOR > 2):
-            extra_compile_args["cxx"] += ["-DVERSION_GE_1_3"]
+        nvcc_flags = [
+            "-O3",
+            "--expt-relaxed-constexpr",
+            "-D__CUDA_NO_HALF_OPERATORS__",
+            "-D__CUDA_NO_HALF_CONVERSIONS__",
+            "-D__CUDA_NO_HALF2_OPERATORS__",
+            "-DWITH_CUDA",
+            f"-I{cuda_include}",
+            "-arch=sm_75",  # Adjust if needed
+            "-std=c++17",
+        ]
 
-        ext_src_root = "cuda"
-        ext_sources = glob.glob("{}/src/*.cpp".format(ext_src_root)) + glob.glob(
-            "{}/src/*.cu".format(ext_src_root)
+        extra_compile_args = {
+            "cxx": ["-O3", "-DVERSION_GE_1_3", "-std=c++17"],
+            "nvcc": nvcc_flags
+        }
+
+        cuda_ext = CUDAExtension(
+            name="torch_points_kernels.points_cuda",
+            sources=cuda_sources,
+            include_dirs=[cuda_include] + include_dirs,
+            extra_compile_args=extra_compile_args,
+            define_macros=[
+                ("WITH_CUDA", None),
+                ("TORCH_EXTENSION_NAME", '"points_cuda"'),
+            ],
         )
+        ext_modules.append(cuda_ext)
+        print("CUDA extension prepared")
 
-        ext_modules = []
-        if WITH_CUDA:
-            nvcc_flags = os.getenv("NVCC_FLAGS", "")
-            nvcc_flags = [] if nvcc_flags == "" else nvcc_flags.split(" ")
-            nvcc_flags += ["-arch=sm_35", "--expt-relaxed-constexpr", "-O2"]
-            extra_compile_args["nvcc"] = nvcc_flags
-
-            ext_modules.append(
-                CUDAExtension(
-                    name="torch_points_kernels.points_cuda",
-                    sources=ext_sources,
-                    include_dirs=["{}/include".format(ext_src_root)],
-                    extra_compile_args=extra_compile_args,
-                )
-            )
-
-        cpu_ext_src_root = "cpu"
-        cpu_ext_sources = glob.glob("{}/src/*.cpp".format(cpu_ext_src_root))
-
-        if WITH_CPU:
-            ext_modules.append(
-                CppExtension(
-                    name="torch_points_kernels.points_cpu",
-                    sources=cpu_ext_sources,
-                    include_dirs=["{}/include".format(cpu_ext_src_root)],
-                    extra_compile_args=extra_compile_args,
-                )
-            )
-        return ext_modules
-    except ImportError:
-        # If torch is not available during setup, return empty ext_modules
-        return []
+    # CPU Extension
+    if WITH_CUDA:
+        cpu_sources = [
+            os.path.join(root_dir, "cpu", "src", "neighbors.cpp"),
+            os.path.join(root_dir, "cpu", "src", "knn.cpp"),
+            os.path.join(root_dir, "cpu", "src", "fps.cpp"),
+            os.path.join(root_dir, "cpu", "src", "ball_query.cpp"),
+            os.path.join(root_dir, "cpu", "src", "bindings.cpp"),
+            os.path.join(root_dir, "cpu", "src", "interpolate.cpp"),
+        ]
+        
+        cpu_ext = CppExtension(
+            "torch_points_kernels.points_cpu",
+            sources=cpu_sources,
+            include_dirs=include_dirs,
+            extra_compile_args=extra_compile_args
+        )
+        ext_modules.append(cpu_ext)
+    
+    return ext_modules
 
 class CustomBuildExtension(BuildExtension):
     def __init__(self, *args, **kwargs):
-        if 'no_python_abi_suffix' in kwargs:
-            kwargs.pop('no_python_abi_suffix')
-        if 'use_ninja' in kwargs:
-            kwargs.pop('use_ninja')
-        super().__init__(*args, **kwargs)
+        # Disable ninja to avoid issues with CUDA compilation
+        super().__init__(*args, no_python_abi_suffix=True, use_ninja=False, **kwargs)
 
-def get_cmdclass():
-    return {"build_ext": CustomBuildExtension}
-
-this_directory = os.path.abspath(os.path.dirname(__file__))
-with open(os.path.join(this_directory, "README.md"), encoding="utf-8") as f:
-    long_description = f.read()
-
-requirements = [
-    "torch>=1.1.0",
-    "numba",
-    "numpy>=1.20,<2.0",
-    "scikit-learn"
-]
-
-url = "https://github.com/YasserElHaddar16/torch-points-kernels"
-__version__ = "0.7.1"
+# Force rebuild if requested
+if os.getenv('FORCE_REBUILD'):
+    sys.argv.extend(['clean', 'build_ext', '--inplace'])
 
 setup(
     name="torch-points-kernels",
-    version=__version__,
-    author="Nicolas Chaulet",
+    version="0.7.1",
     packages=find_packages(),
-    description="PyTorch kernels for spatial operations on point clouds",
-    url=url,
-    download_url="{}/archive/{}.tar.gz".format(url, __version__),
-    install_requires=requirements,
     ext_modules=get_ext_modules(),
-    cmdclass=get_cmdclass(),
-    long_description=long_description,
-    long_description_content_type="text/markdown",
-    python_requires=">=3.8",
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
+    cmdclass={'build_ext': CustomBuildExtension},
+    install_requires=[
+        'torch>=2.1.0',
+        'numpy>=1.20,<2.0',
+        'scikit-learn'
     ],
+    python_requires='>=3.8',
 )
